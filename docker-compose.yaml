@@ -1,0 +1,39 @@
+version: "3.8"
+services:
+  pin-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: pin-api
+    ports:
+      - 5001:5001
+    volumes:
+      - ./:/app
+    environment:
+      APP_NAME: pin-api
+      API_ENV: dev
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+      POSTGRES_URL: postgresql://postgres:postgres@postgres:5432/pin?sslmode=disable
+    networks:
+      - app_network
+
+  postgres:
+    image: postgres:13.22
+    container_name: postgresql-pin
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=pin
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - TZ=GMT
+    ports:
+      - 5432:5432
+    volumes:
+      - ./docker-compose/postgres:/var/lib/postgresql-pin/data
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge

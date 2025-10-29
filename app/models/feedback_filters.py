@@ -1,0 +1,31 @@
+from typing import Optional
+from datetime import datetime
+from pydantic import BaseModel
+
+class FeedbackFilters(BaseModel):
+    id: Optional[str] = None
+    email: Optional[str] = None
+    corporate_email: Optional[str] = None
+    department: Optional[str] = None
+    location: Optional[str] = None
+    gender: Optional[str] = None
+    generation: Optional[str] = None
+    name: Optional[str] = None
+    response_date_from: Optional[datetime] = None
+    response_date_to: Optional[datetime] = None
+    enps_min: Optional[int] = None
+    enps_max: Optional[int] = None
+    interest_in_position_min: Optional[int] = None
+    interest_in_position_max: Optional[int] = None
+    contribution_min: Optional[int] = None
+    contribution_max: Optional[int] = None
+    learning_and_development_min: Optional[int] = None
+    learning_and_development_max: Optional[int] = None
+    feedback_min: Optional[int] = None
+    feedback_max: Optional[int] = None
+    manager_interaction_min: Optional[int] = None
+    manager_interaction_max: Optional[int] = None
+    opportunity_clarity_min: Optional[int] = None
+    opportunity_clarity_max: Optional[int] = None
+    permanence_expectation_min: Optional[int] = None
+    permanence_expectation_max: Optional[int] = None
