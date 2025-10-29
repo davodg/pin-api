@@ -198,4 +198,4 @@ Rode o arquivo .sh que iniciará o container docker da API e criará as tabelas 
 
 ## Como IA foi usada no projeto?
 
-A IA foi usada em tarefas repetitivas com Copilot, debug, criação do script .sh e enriquecimento do readme com ChatGPT.
+A IA foi usada em tarefas repetitivas com Copilot. Além de debug, criação do script .sh e enriquecimento do readme com ChatGPT.
