@@ -17,9 +17,11 @@ services:
       POSTGRES_URL: postgresql://postgres:postgres@postgres:5432/pin?sslmode=disable
     networks:
       - app_network
+    env_file:
+      - .env
 
   postgres:
-    image: postgres:13.22
+    image: postgres:18.7
     container_name: postgresql-pin
     restart: unless-stopped
     environment:

@@ -1,9 +1,10 @@
 from typing import Optional
+from uuid import UUID
 from datetime import datetime
 from pydantic import BaseModel
 
 class FeedbackFilters(BaseModel):
-    id: Optional[str] = None
+    id: Optional[UUID] = None
     email: Optional[str] = None
     corporate_email: Optional[str] = None
     department: Optional[str] = None

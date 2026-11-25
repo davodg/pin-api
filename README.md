@@ -11,7 +11,7 @@ Essa API faz operações CRUD em um banco de dados Postgres. Abaixo, vamos enten
 A demonstração representa uma única organização e deve usar apenas dados fictícios.
 Todos os endpoints `/api/v1/feedback` exigem `Authorization: Bearer <token>`.
 
-| Perfil | GET | POST / PUT / DELETE |
+| Perfil | GET | POST / PUT / PATCH / DELETE |
 | --- | --- | --- |
 | `viewer` | Permitido | Proibido |
 | `admin` | Permitido | Permitido |
@@ -77,6 +77,27 @@ configurado por este repositório. A política atual permite consultar todos os
 feedbacks da organização; não implementa isolamento entre empresas ou autorização
 por proprietário do registro.
 
+## Validação de feedbacks
+
+Os modelos Pydantic documentam o payload em `/docs` e rejeitam entradas inválidas
+com `422`, antes de executar SQL. POST e PUT exigem `name`, `email`,
+`corporate_email`, `department`, `location`, `company_tenure`, `gender`,
+`generation` e as oito notas (`interest_in_position`, `contribution`,
+`learning_and_development`, `feedback`, `manager_interaction`,
+`opportunity_clarity`, `permanence_expectation`, `enps`).
+
+- Textos obrigatórios não podem ser vazios e respeitam os limites das colunas.
+- E-mails são validados; campos desconhecidos e `id` no body são rejeitados.
+- Notas devem ser inteiros JSON, sem coerção de strings, booleanos ou decimais.
+  Os limites são os do INTEGER do PostgreSQL; não há escala de questionário definida.
+- Datas de entrada e saída usam `YYYY-MM-DD`. O antigo formato `DD/MM/YYYY`
+  não é mais aceito. A coluna TIMESTAMP existente é mantida; a API expõe a data.
+- Identificadores de rota e filtro `id` devem ser UUIDs válidos.
+
+Não há migration de banco nesta alteração. Registros preexistentes precisam
+atender ao contrato de resposta (inclusive e-mails válidos e textos obrigatórios).
+Clientes que enviavam PUT parcial devem passar a usar PATCH.
+
 ## Endpoints
 
 ### POST /api/v1/feedback
@@ -124,7 +145,7 @@ Cria um registro na tabela `employee_feedback`.
 ```json
 {
   "data": {
-    "id": 42,
+    "id": "d39033df-88af-4d46-a3a4-a56776e17a66",
     "name": "Demo 019",
     "...": "..."
   },
@@ -173,8 +194,8 @@ Lista registros com **paginação** e **filtros**.
 ```json
 {
   "data": [
-    { "id": 1, "name": "Demo 019", "...": "..." },
-    { "id": 2, "name": "Demo 314", "...": "..." }
+    { "id": "d39033df-88af-4d46-a3a4-a56776e17a66", "name": "Demo 019", "...": "..." },
+    { "id": "78245992-4564-4c71-b4b7-05ede27d341b", "name": "Demo 314", "...": "..." }
   ],
   "meta": { "page": 1, "limit": 5, "total": 12, "pages": 3 }
 }
@@ -184,25 +205,35 @@ Lista registros com **paginação** e **filtros**.
 
 ### PUT /api/v1/feedback/{id}
 
-Atualiza um registro existente.
+Substitui o registro completo. Envie todos os campos obrigatórios, usando o mesmo
+body do POST. Campos anuláveis omitidos são definidos como `null`. Para uma
+alteração parcial, use PATCH. O identificador deve ser um UUID válido.
 
-**Curl:**
+Salve o exemplo completo do POST em `feedback.json` e execute:
+
 ```bash
-curl -X PUT http://127.0.0.1:8000/api/v1/feedback/42   -H "Content-Type: application/json"   -d '{"name":"Demo Atualizado","enps":9}'
+curl -X PUT http://127.0.0.1:8000/api/v1/feedback/d39033df-88af-4d46-a3a4-a56776e17a66 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" --data-binary @feedback.json
 ```
 
-**Resposta:**
-```json
-{
-  "data": {
-    "id": "42",
-    "name": "Demo Atualizado",
-    "enps": 9,
-    "...": "..."
-  },
-  "meta": {}
-}
+### PATCH /api/v1/feedback/{id}
+
+Altera somente os campos enviados e retorna o registro completo atualizado.
+Campos omitidos são preservados. Para limpar um comentário, telefone, nível
+organizacional ou data, envie `null`. Campos obrigatórios não aceitam `null`.
+Um objeto vazio, campos desconhecidos ou tentativa de alterar `id` retornam `422`.
+Somente `admin` pode executar PATCH.
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/api/v1/feedback/d39033df-88af-4d46-a3a4-a56776e17a66 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Demo Atualizado","enps":9,"feedback_comments":null}'
 ```
+
+PUT, PATCH e DELETE retornam `404` quando o registro não existe.
+As respostas mantêm o envelope `{"data": ..., "meta": {}}`.
 
 ---
 
@@ -212,17 +243,17 @@ Remove um registro pelo `id`.
 
 **Resposta:**
 ```json
-{ "data": { "id": "42" }, "meta": {} }
+{ "data": { "id": "d39033df-88af-4d46-a3a4-a56776e17a66" }, "meta": {} }
 ```
 
 ---
 
 ## Paginação, filtros e ordenação
 
-- **Paginação:** `page` e `limit` (padrões: 1 e 10).
+- **Paginação:** `page >= 1` e `1 <= limit <= 100` (padrões: 1 e 10).
 - **Filtros:** conforme a lista do [GET /api/v1/feedback](#get-apiv1feedback).  
   Filtros de texto usam `ILIKE '%valor%'` no PostgreSQL.
-- **Ordenação:** por padrão `response_date DESC NULLS LAST`.
+- **Ordenação:** por padrão `response_date DESC NULLS LAST, id DESC`.
 
 ---
 

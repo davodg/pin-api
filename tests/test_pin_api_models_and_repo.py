@@ -14,37 +14,39 @@ for p in [str(PIN_API_DIR), str(UNDERSCORE_API_DIR)]:
 
 
 
-from app.models.employee_feedback import EmployeeFeedback as APIEmployeeFeedback  
-from app.models.feedback_filters import FeedbackFilters  
-from app.repositories.feedback_repository import FeedbackRepository  
+from pydantic import ValidationError
+from app.models.employee_feedback import FeedbackCreate, FeedbackReplace, FeedbackUpdate, FeedbackResponse
+from app.models.feedback_filters import FeedbackFilters
+from app.repositories.feedback_repository import FeedbackRepository, FeedbackNotFound
+from tests.feedback_fixtures import FEEDBACK_ID, payload, row
 
 
-class TestPinApiEmployeeFeedback(unittest.TestCase):
+class TestFeedbackModels(unittest.TestCase):
+    def test_model_dump_preserves_date(self):
+        model = FeedbackCreate(**payload(name='  Demo  ', response_date='2024-01-20'))
+        self.assertEqual(model.name, 'Demo')
+        self.assertEqual(model.model_dump()['response_date'], datetime.date(2024, 1, 20))
+        self.assertEqual(model.model_dump(mode='json')['response_date'], '2024-01-20')
 
-    def test_to_dict_and_date_parsing(self):
-        raw = {
-            'id': '1',
-            'name': 'Charlie',
-            'email': 'charlie@example.com',
-            'l0_company': 'Root',
-            'l1_directorate': 'Dir',
-            'l2_management': 'Mgr',
-            'l3_coordination': 'Coord',
-            'l4_area': 'Area',
-            'response_date': '01/10/2024',
-            'enps': 9
-        }
-        fb = APIEmployeeFeedback(raw)
-        result = fb.to_dict()
-        self.assertIsInstance(result['response_date'], datetime.date)
-        self.assertEqual(result['response_date'], datetime.date(2024, 10, 1))
-        self.assertEqual(result['l0_company'], 'Root')
-        fb2 = APIEmployeeFeedback({'name': 'NoDate'})
-        self.assertIsNone(fb2.to_dict()['response_date'])
+    def test_database_datetime_is_exposed_as_date(self):
+        model = FeedbackResponse(id=FEEDBACK_ID, **payload(response_date=datetime.datetime(2024, 1, 20, 12)))
+        self.assertEqual(model.response_date, datetime.date(2024, 1, 20))
 
-    def test_invalid_date_type(self):
-        with self.assertRaises(TypeError):
-            APIEmployeeFeedback({'response_date': 123})
+    def test_all_required_fields_reject_omission_and_null(self):
+        for name, field in FeedbackCreate.model_fields.items():
+            if not field.is_required():
+                continue
+            data = payload()
+            del data[name]
+            with self.subTest(name=name):
+                with self.assertRaises(ValidationError):
+                    FeedbackCreate(**data)
+                with self.assertRaises(ValidationError):
+                    FeedbackUpdate(**{name: None})
+
+    def test_patch_preserves_explicit_null_and_omission(self):
+        self.assertEqual(FeedbackUpdate(feedback_comments=None).model_dump(exclude_unset=True), {'feedback_comments': None})
+        self.assertEqual(FeedbackUpdate(enps=0).model_dump(exclude_unset=True), {'enps': 0})
 
 
 class TestFeedbackRepository(unittest.IsolatedAsyncioTestCase):
@@ -89,36 +91,17 @@ class TestFeedbackRepository(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params, [date_from, date_to])
 
     def test_normalize(self):
-        cols = self.repo._columns_for_employee_feedback()
-        raw_row = [1, 'Eve', 'eve@example.com', 'eve@corp.com', '11999999999', 'IT', 'NY', '1', 'F', 'GenZ',
-                   'L0', 'L1', 'L2', 'L3', 'L4', '01/01/2024',
-                   4, 'ok', 3, 'ok', 5, 'ok', 2, 'meh', 3, 'meh', 4, 'meh', 5, 'meh', 10, 'meh']
-        rows = [tuple(raw_row)]
-        normalized = self.repo._normalize(rows, cols)
-        self.assertEqual(len(normalized), 1)
-        data = normalized[0]
-        self.assertEqual(data['id'], 1)
-        self.assertEqual(data['name'], 'Eve')
-        self.assertEqual(data['email'], 'eve@example.com')
-        self.assertEqual(data['phone_number'], '11999999999')
-        self.assertIsInstance(data['response_date'], datetime.date)
-
-    def test_check_model(self):
-        model = self.repo._check_model({'name': 'Foo'})
-        from app.models.employee_feedback import EmployeeFeedback as EF  
-        self.assertIsInstance(model, EF)
-        model2 = self.repo._check_model(model)
-        self.assertIs(model2, model)
-        with self.assertRaises(ValueError):
-            self.repo._check_model(['invalid'])
+        models = self.repo._normalize([row(self.repo, phone_number='11999999999')], self.repo._columns_for_employee_feedback())
+        self.assertEqual(models[0].id, FEEDBACK_ID)
+        self.assertEqual(models[0].phone_number, '11999999999')
 
     async def test_create(self):
-        self.repo.db.execute.return_value = [(42,)]
-        feedback = {'name': 'Foo'}
-        ctx = await self.repo.create(feedback)
-        self.repo.db.execute.assert_awaited_once()
-        self.assertEqual(ctx['data']['id'], 42)
-        self.assertEqual(ctx['data']['name'], 'Foo')
+        self.repo.db.execute.return_value = [row(self.repo)]
+        result = await self.repo.create(FeedbackCreate(**payload()))
+        self.assertEqual(result['data'].id, FEEDBACK_ID)
+        params = self.repo.db.execute.await_args.args[1]
+        self.assertEqual(params['name'], 'Demo')
+        self.assertNotIn('id', params)
 
     async def test_get_by_id(self):
         fake_row = (1, 'Bob', 'bob@example.com', None, None, None, None, None, None,
@@ -148,16 +131,32 @@ class TestFeedbackRepository(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(ctx['meta']['total'], 7)
             self.assertEqual(ctx['meta']['pages'], 3)
 
-    async def test_update(self):
-        self.repo.db.execute.return_value = None
-        data = {'name': 'Updated'}
-        ctx = await self.repo.update(5, data)
-        self.repo.db.execute.assert_awaited_once()
-        self.assertEqual(ctx['data']['id'], 5)
-        self.assertEqual(ctx['data']['name'], 'Updated')
+    async def test_update_replaces_nullable_fields(self):
+        self.repo.db.execute.return_value = [row(self.repo)]
+        await self.repo.update(FEEDBACK_ID, FeedbackReplace(**payload()))
+        params = self.repo.db.execute.await_args.args[1]
+        self.assertIn('feedback_comments', params)
+        self.assertIsNone(params['feedback_comments'])
+        self.assertEqual(params['id'], str(FEEDBACK_ID))
+
+    async def test_patch_updates_only_supplied_columns(self):
+        self.repo.db.execute.return_value = [row(self.repo)]
+        await self.repo.patch(FEEDBACK_ID, FeedbackUpdate(feedback_comments=None))
+        query, params = self.repo.db.execute.await_args.args
+        self.assertEqual(params, {'feedback_comments': None, 'id': str(FEEDBACK_ID)})
+        self.assertIn('SET feedback_comments = %(feedback_comments)s WHERE', query)
+
+    async def test_missing_write_target(self):
+        self.repo.db.execute.return_value = []
+        for call in [lambda: self.repo.update(FEEDBACK_ID, FeedbackReplace(**payload())),
+                     lambda: self.repo.patch(FEEDBACK_ID, FeedbackUpdate(name='Changed')),
+                     lambda: self.repo.delete(FEEDBACK_ID)]:
+            with self.assertRaises(FeedbackNotFound):
+                await call()
 
     async def test_delete(self):
-        self.repo.db.execute.return_value = None
-        ctx = await self.repo.delete(7)
-        self.repo.db.execute.assert_awaited_once_with('DELETE FROM employee_feedback WHERE id = %s;', (7,))
-        self.assertEqual(ctx['data']['id'], 7)
+        self.repo.db.execute.return_value = [(str(FEEDBACK_ID),)]
+        result = await self.repo.delete(FEEDBACK_ID)
+        self.assertEqual(result['data']['id'], str(FEEDBACK_ID))
+        self.repo.db.execute.assert_awaited_once_with(
+            'DELETE FROM employee_feedback WHERE id = %s RETURNING id;', (str(FEEDBACK_ID),))

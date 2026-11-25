@@ -6,6 +6,8 @@ from uuid import uuid4
 import jwt
 from fastapi.testclient import TestClient
 
+from tests.feedback_fixtures import FEEDBACK_ID, payload, record
+
 import main
 from app.config import Config
 from app.security.auth import AuthService, get_auth_service, password_hasher
@@ -29,8 +31,9 @@ class TestAuth(unittest.TestCase):
         self.auth = AuthService(self.repo, self.config, self.password_hash)
         self.feedback = mock.AsyncMock()
         self.feedback.get.return_value = {'data': []}
-        for method in ['create', 'update', 'delete']:
-            getattr(self.feedback, method).return_value = {'data': {}}
+        for method in ['create', 'update', 'patch']:
+            getattr(self.feedback, method).return_value = {'data': record()}
+        self.feedback.delete.return_value = {'data': {'id': FEEDBACK_ID}}
         main.app.dependency_overrides[get_auth_service] = lambda: self.auth
         main.app.dependency_overrides[main.get_feedback_service] = lambda: self.feedback
         self.addCleanup(main.app.dependency_overrides.clear)
@@ -42,9 +45,10 @@ class TestAuth(unittest.TestCase):
 
     def feedback_requests(self, headers=None):
         return [self.client.get('/api/v1/feedback', headers=headers),
-                self.client.post('/api/v1/feedback', json={}, headers=headers),
-                self.client.put('/api/v1/feedback/123', json={}, headers=headers),
-                self.client.delete('/api/v1/feedback/123', headers=headers)]
+                self.client.post('/api/v1/feedback', json=payload(), headers=headers),
+                self.client.put(f'/api/v1/feedback/{FEEDBACK_ID}', json=payload(), headers=headers),
+                self.client.delete(f'/api/v1/feedback/{FEEDBACK_ID}', headers=headers),
+                self.client.patch(f'/api/v1/feedback/{FEEDBACK_ID}', json={'name': 'Changed'}, headers=headers)]
 
     def test_all_feedback_endpoints_require_authentication(self):
         for response in self.feedback_requests():
@@ -53,20 +57,20 @@ class TestAuth(unittest.TestCase):
         self.assertEqual(self.feedback.mock_calls, [])
 
     def test_viewer_can_only_read(self):
-        self.assertEqual([r.status_code for r in self.feedback_requests(self.headers())], [200, 403, 403, 403])
+        self.assertEqual([r.status_code for r in self.feedback_requests(self.headers())], [200, 403, 403, 403, 403])
         self.feedback.create.assert_not_awaited()
         self.feedback.update.assert_not_awaited()
         self.feedback.delete.assert_not_awaited()
 
     def test_admin_can_use_all_feedback_endpoints(self):
         self.user['role'] = 'admin'
-        self.assertEqual([r.status_code for r in self.feedback_requests(self.headers())], [200] * 4)
+        self.assertEqual([r.status_code for r in self.feedback_requests(self.headers())], [200] * 5)
 
     def test_role_change_is_effective_for_existing_token(self):
         self.user['role'] = 'admin'
         headers = self.headers()
         self.user['role'] = 'viewer'
-        self.assertEqual(self.client.delete('/api/v1/feedback/123', headers=headers).status_code, 403)
+        self.assertEqual(self.client.delete(f'/api/v1/feedback/{FEEDBACK_ID}', headers=headers).status_code, 403)
 
     def test_inactive_deleted_and_unknown_role_users(self):
         headers = self.headers()

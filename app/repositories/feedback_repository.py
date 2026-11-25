@@ -1,61 +1,35 @@
 from typing import Optional, Dict, Any, List, Tuple
 from math import ceil
+
 from app.storage.postgres import Postgres
-from app.models.employee_feedback import EmployeeFeedback
+from app.models.employee_feedback import FeedbackCreate, FeedbackReplace, FeedbackUpdate, FeedbackResponse
 
 
-class FeedbackRepository(object):
+class FeedbackNotFound(Exception):
+    pass
+
+
+class FeedbackRepository:
     def __init__(self, db: Postgres):
         self.db = db
 
-    async def create(self, feedback):
-        data = self._check_model(feedback).to_dict()
-        query = """
-            INSERT INTO employee_feedback (
-                name, email, corporate_email, phone_number, department, location,
-                company_tenure, gender, generation,
-                l0_company, l1_directorate, l2_management,
-                l3_coordination, l4_area, response_date,
-                interest_in_position, interest_in_position_comments,
-                contribution, contribution_comments,
-                learning_and_development, learning_and_development_comments,
-                feedback, feedback_comments,
-                manager_interaction, manager_interaction_comments,
-                opportunity_clarity, opportunity_clarity_comments,
-                permanence_expectation, permanence_expectation_comments,
-                enps, enps_comments
-            ) VALUES (
-                %(name)s, %(email)s, %(corporate_email)s, %(phone_number)s, %(department)s, %(location)s,
-                %(company_tenure)s, %(gender)s, %(generation)s,
-                %(l0_company)s, %(l1_directorate)s, %(l2_management)s,
-                %(l3_coordination)s, %(l4_area)s, %(response_date)s,
-                %(interest_in_position)s, %(interest_in_position_comments)s,
-                %(contribution)s, %(contribution_comments)s,
-                %(learning_and_development)s, %(learning_and_development_comments)s,
-                %(feedback)s, %(feedback_comments)s,
-                %(manager_interaction)s, %(manager_interaction_comments)s,
-                %(opportunity_clarity)s, %(opportunity_clarity_comments)s,
-                %(permanence_expectation)s, %(permanence_expectation_comments)s,
-                %(enps)s, %(enps_comments)s
-            )
-            RETURNING id;
-        """
-        result = await self.db.execute(query, data)
-        data['id'] = result[0][0]
-
-        return {
-            'data': data,
-            'meta': {}
-        }
+    async def create(self, feedback: FeedbackCreate):
+        data = feedback.model_dump()
+        # Column names come exclusively from our validated model, never raw input.
+        columns = ', '.join(data)
+        placeholders = ', '.join(f'%({name})s' for name in data)
+        rows = await self.db.execute(
+            f'INSERT INTO employee_feedback ({columns}) VALUES ({placeholders}) '
+            f'RETURNING {self._select_columns()}', data,
+        )
+        return self._write_response(rows)
 
     async def get(self, page: int, limit: int, filters: Optional[Dict[str, Any]] = None):
         filters = self._convert_filter_to_dict(filters)
-        page = max(1, int(page))
-        limit = max(1, int(limit))
 
         if filters.get("id"):
             sql = f"SELECT {self._select_columns()} FROM employee_feedback WHERE id = %s"
-            rows = await self.db.query(sql, (filters["id"],))
+            rows = await self.db.query(sql, (str(filters["id"]),))
             cols = self._columns_for_employee_feedback()
             normalized = self._normalize(rows, cols)
             data = normalized[0] if normalized else None
@@ -68,7 +42,7 @@ class FeedbackRepository(object):
 
         where_sql, params = self._build_where(filters)
 
-        order_by = "response_date DESC NULLS LAST"
+        order_by = "response_date DESC NULLS LAST, id DESC"
         offset = (page - 1) * limit
 
         sql = f"""
@@ -93,59 +67,35 @@ class FeedbackRepository(object):
             'meta': {"page": page, "limit": limit, "total": total, "pages": pages}
         }
 
+
     async def delete(self, feedback_id):
-        query = "DELETE FROM employee_feedback WHERE id = %s;"
-        await self.db.execute(query, (feedback_id,))
+        rows = await self.db.execute(
+            'DELETE FROM employee_feedback WHERE id = %s RETURNING id;', (str(feedback_id),),
+        )
+        if not rows:
+            raise FeedbackNotFound()
+        return {'data': {'id': rows[0][0]}, 'meta': {}}
 
-        return {
-            'data': {'id': feedback_id},
-            'meta': {}
-        }
+    async def update(self, feedback_id, feedback: FeedbackReplace):
+        return await self._update_fields(feedback_id, feedback.model_dump())
 
-    async def update(self, feedback_id, feedback):
-        data = self._check_model(feedback).to_dict()
-        data['id'] = feedback_id
-        query = """
-            UPDATE employee_feedback SET
-                name = %(name)s,
-                email = %(email)s,
-                corporate_email = %(corporate_email)s,
-                phone_number = %(phone_number)s,
-                department = %(department)s,
-                location = %(location)s,
-                company_tenure = %(company_tenure)s,
-                gender = %(gender)s,
-                generation = %(generation)s,
-                l0_company = %(l0_company)s,
-                l1_directorate = %(l1_directorate)s,
-                l2_management = %(l2_management)s,
-                l3_coordination = %(l3_coordination)s,
-                l4_area = %(l4_area)s,
-                response_date = %(response_date)s,
-                interest_in_position = %(interest_in_position)s,
-                interest_in_position_comments = %(interest_in_position_comments)s,
-                contribution = %(contribution)s,
-                contribution_comments = %(contribution_comments)s,
-                learning_and_development = %(learning_and_development)s,
-                learning_and_development_comments = %(learning_and_development_comments)s,
-                feedback = %(feedback)s,
-                feedback_comments = %(feedback_comments)s,
-                manager_interaction = %(manager_interaction)s,
-                manager_interaction_comments = %(manager_interaction_comments)s,
-                opportunity_clarity = %(opportunity_clarity)s,
-                opportunity_clarity_comments = %(opportunity_clarity_comments)s,
-                permanence_expectation = %(permanence_expectation)s,
-                enps = %(enps)s,
-                enps_comments = %(enps_comments)s
-            WHERE id = %(id)s;
-        """
-        await self.db.execute(query, data)
+    async def patch(self, feedback_id, feedback: FeedbackUpdate):
+        return await self._update_fields(feedback_id, feedback.model_dump(exclude_unset=True))
 
-        return {
-            'data': data,
-            'meta': {}
-        }
-    
+    async def _update_fields(self, feedback_id, data):
+        # Both callers supply Pydantic fields with extra='forbid'.
+        assignments = ', '.join(f'{name} = %({name})s' for name in data)
+        rows = await self.db.execute(
+            f'UPDATE employee_feedback SET {assignments} WHERE id = %(id)s '
+            f'RETURNING {self._select_columns()}', {**data, 'id': str(feedback_id)},
+        )
+        return self._write_response(rows)
+
+    def _write_response(self, rows):
+        if not rows:
+            raise FeedbackNotFound()
+        return {'data': self._normalize(rows, self._columns_for_employee_feedback())[0], 'meta': {}}
+
     def _convert_filter_to_dict(self, filters):
         if filters is None:
             return {}
@@ -240,26 +190,5 @@ class FeedbackRepository(object):
         ]
 
 
-    def _normalize(self, rows: List[tuple], columns: List[str]) -> List[Dict[str, Any]]:
-        results = []
-        if not rows:
-            return results
-
-        for row in rows:
-            data = {}
-            for idx in range(len(columns)):
-                col = columns[idx]
-                data[col] = row[idx]
-            model = EmployeeFeedback(data)
-            results.append(model.to_dict())
-
-        return results
-
-    def _check_model(self, feedback):
-        if isinstance(feedback, EmployeeFeedback):
-            return feedback
-        elif isinstance(feedback, dict):
-            model = EmployeeFeedback(feedback)
-            return model
-        else:
-            raise ValueError("Invalid feedback model")
+    def _normalize(self, rows: List[tuple], columns: List[str]) -> List[FeedbackResponse]:
+        return [FeedbackResponse.model_validate(dict(zip(columns, row))) for row in rows]
