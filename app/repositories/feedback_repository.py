@@ -1,21 +1,18 @@
 from typing import Optional, Dict, Any, List, Tuple
 from math import ceil
-from app.config import Config
 from app.storage.postgres import Postgres
 from app.models.employee_feedback import EmployeeFeedback
 
 
 class FeedbackRepository(object):
-    def __init__(self):
-        self.config = Config()
-        self.db = Postgres()
-        self.context = {'data': {}, 'meta': {}}
+    def __init__(self, db: Postgres):
+        self.db = db
 
-    def create(self, feedback):
+    async def create(self, feedback):
         data = self._check_model(feedback).to_dict()
         query = """
             INSERT INTO employee_feedback (
-                name, email, corporate_email, department, location,
+                name, email, corporate_email, phone_number, department, location,
                 company_tenure, gender, generation,
                 l0_company, l1_directorate, l2_management,
                 l3_coordination, l4_area, response_date,
@@ -28,7 +25,7 @@ class FeedbackRepository(object):
                 permanence_expectation, permanence_expectation_comments,
                 enps, enps_comments
             ) VALUES (
-                %(name)s, %(email)s, %(corporate_email)s, %(department)s, %(location)s,
+                %(name)s, %(email)s, %(corporate_email)s, %(phone_number)s, %(department)s, %(location)s,
                 %(company_tenure)s, %(gender)s, %(generation)s,
                 %(l0_company)s, %(l1_directorate)s, %(l2_management)s,
                 %(l3_coordination)s, %(l4_area)s, %(response_date)s,
@@ -43,26 +40,31 @@ class FeedbackRepository(object):
             )
             RETURNING id;
         """
-        result = self.db.execute(query, data)
+        result = await self.db.execute(query, data)
         data['id'] = result[0][0]
-        self.context['data'] = data
-        return self.context
 
-    def get(self, page: int, limit: int, filters: Optional[Dict[str, Any]] = None):
+        return {
+            'data': data,
+            'meta': {}
+        }
+
+    async def get(self, page: int, limit: int, filters: Optional[Dict[str, Any]] = None):
         filters = self._convert_filter_to_dict(filters)
         page = max(1, int(page))
         limit = max(1, int(limit))
 
         if filters.get("id"):
             sql = f"SELECT {self._select_columns()} FROM employee_feedback WHERE id = %s"
-            rows = self.db.query(sql, (filters["id"],))
+            rows = await self.db.query(sql, (filters["id"],))
             cols = self._columns_for_employee_feedback()
             normalized = self._normalize(rows, cols)
             data = normalized[0] if normalized else None
             total = 1 if data else 0
-            self.context['data'] = data
-            self.context['meta'] = {"page": 1, "limit": 1, "total": total, "pages": 1}
-            return self.context
+
+            return {
+                'data': data,
+                'meta': {"page": 1, "limit": 1, "total": total, "pages": 1}
+            }
 
         where_sql, params = self._build_where(filters)
 
@@ -76,27 +78,31 @@ class FeedbackRepository(object):
             ORDER BY {order_by}
             LIMIT %s OFFSET %s
         """
-        rows = self.db.query(sql, params + [limit, offset])
+        rows = await self.db.query(sql, params + [limit, offset])
 
         count_sql = f"SELECT COUNT(*) FROM employee_feedback {where_sql}"
-        total_rows = self.db.query(count_sql, params)
+        total_rows = await self.db.query(count_sql, params)
         total = int(total_rows[0][0]) if total_rows else 0
         pages = ceil(total / limit) if limit else 1
 
         cols = self._columns_for_employee_feedback()
         data = self._normalize(rows, cols)
 
-        self.context['data'] = data
-        self.context['meta'] = {"page": page, "limit": limit, "total": total, "pages": pages}
-        return self.context
+        return {
+            'data': data,
+            'meta': {"page": page, "limit": limit, "total": total, "pages": pages}
+        }
 
-    def delete(self, feedback_id):
+    async def delete(self, feedback_id):
         query = "DELETE FROM employee_feedback WHERE id = %s;"
-        self.db.execute(query, (feedback_id,))
-        self.context['data'] = {'id': feedback_id}
-        return self.context
+        await self.db.execute(query, (feedback_id,))
 
-    def update(self, feedback_id, feedback):
+        return {
+            'data': {'id': feedback_id},
+            'meta': {}
+        }
+
+    async def update(self, feedback_id, feedback):
         data = self._check_model(feedback).to_dict()
         data['id'] = feedback_id
         query = """
@@ -104,6 +110,7 @@ class FeedbackRepository(object):
                 name = %(name)s,
                 email = %(email)s,
                 corporate_email = %(corporate_email)s,
+                phone_number = %(phone_number)s,
                 department = %(department)s,
                 location = %(location)s,
                 company_tenure = %(company_tenure)s,
@@ -132,9 +139,12 @@ class FeedbackRepository(object):
                 enps_comments = %(enps_comments)s
             WHERE id = %(id)s;
         """
-        self.db.execute(query, data)
-        self.context['data'] = data
-        return self.context
+        await self.db.execute(query, data)
+
+        return {
+            'data': data,
+            'meta': {}
+        }
     
     def _convert_filter_to_dict(self, filters):
         if filters is None:
@@ -199,7 +209,7 @@ class FeedbackRepository(object):
 
     def _select_columns(self) -> str:
         return (
-            "id, name, email, corporate_email, department, location, "
+            "id, name, email, corporate_email, phone_number, department, location, "
             "company_tenure, gender, generation, "
             "l0_company, l1_directorate, l2_management, "
             "l3_coordination, l4_area, response_date, "
@@ -215,7 +225,7 @@ class FeedbackRepository(object):
 
     def _columns_for_employee_feedback(self) -> List[str]:
         return [
-            "id", "name", "email", "corporate_email", "department", "location",
+            "id", "name", "email", "corporate_email", "phone_number", "department", "location",
             "company_tenure", "gender", "generation",
             "l0_company", "l1_directorate", "l2_management",
             "l3_coordination", "l4_area", "response_date",

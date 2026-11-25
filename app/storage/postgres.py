@@ -1,39 +1,38 @@
+from psycopg_pool import AsyncConnectionPool
+
 from app.config import Config
-import psycopg2cffi
+
 
 class Postgres:
     def __init__(self):
-        self.config = Config()
-        self.conn = psycopg2cffi.connect(
-            user=self.config.postgres_db_user,
-            password=self.config.postgres_db_password,
-            host=self.config.postgres_db_host,
-            port=self.config.postgres_db_port,
-            database=self.config.postgres_db_name,
+        config = Config()
+        self.pool = AsyncConnectionPool(
+            kwargs={
+                "user": config.postgres_db_user,
+                "password": config.postgres_db_password,
+                "host": config.postgres_db_host,
+                "port": config.postgres_db_port,
+                "dbname": config.postgres_db_name,
+            },
+            min_size=4,
+            max_size=16,
+            open=False,
         )
-        self.cursor = self.conn.cursor()
 
-    def query(self, sql, params=None):
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute(sql, params or ())
-                rows = cur.fetchall()
-                return rows
-        except Exception:
-            self.conn.rollback()
-            raise
+    async def open(self):
+        await self.pool.open(wait=True)
 
-    def execute(self, query, values=''):
-        try:
-            self.cursor.execute(query, values)
-            self.conn.commit()
-            return self.cursor.fetchall() if 'RETURNING' in query.upper() else None
-        except Exception:
-            self.conn.rollback()
-            raise
+    async def query(self, sql, params=None):
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(sql, params)
+                return await cur.fetchall()
 
-    def close(self):
-        try:
-            self.conn.close()
-        except Exception:
-            pass
+    async def execute(self, query, values=None):
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(query, values)
+                return await cur.fetchall() if cur.description is not None else None
+
+    async def close(self):
+        await self.pool.close()

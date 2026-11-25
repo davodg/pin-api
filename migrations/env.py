@@ -17,7 +17,7 @@ database_url = None
 if db_user and db_password and db_host and db_port and db_name:
     user_enc = quote_plus(db_user)
     password_enc = quote_plus(db_password)
-    database_url = f"postgresql://{user_enc}:{password_enc}@{db_host}:{db_port}/{db_name}"
+    database_url = f"postgresql+psycopg://{user_enc}:{password_enc}@{db_host}:{db_port}/{db_name}"
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

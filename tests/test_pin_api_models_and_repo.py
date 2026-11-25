@@ -2,7 +2,6 @@ import datetime
 import unittest
 import pathlib
 import sys
-import types
 from unittest import mock
 
 
@@ -14,23 +13,6 @@ for p in [str(PIN_API_DIR), str(UNDERSCORE_API_DIR)]:
         sys.path.insert(0, p)
 
 
-if 'psycopg2cffi' not in sys.modules:
-    class _DummyCursor:
-        def execute(self, *args, **kwargs):
-            return None
-        def fetchall(self):
-            return []
-    class _DummyConnection:
-        def cursor(self):
-            return _DummyCursor()
-        def commit(self):
-            pass
-        def rollback(self):
-            pass
-        def close(self):
-            pass
-    fake_psycopg2 = types.SimpleNamespace(connect=lambda *args, **kwargs: _DummyConnection())
-    sys.modules['psycopg2cffi'] = fake_psycopg2
 
 from app.models.employee_feedback import EmployeeFeedback as APIEmployeeFeedback  
 from app.models.feedback_filters import FeedbackFilters  
@@ -65,11 +47,10 @@ class TestPinApiEmployeeFeedback(unittest.TestCase):
             APIEmployeeFeedback({'response_date': 123})
 
 
-class TestFeedbackRepository(unittest.TestCase):
+class TestFeedbackRepository(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
-        self.repo = FeedbackRepository()
-        self.repo.db = mock.MagicMock()
+        self.repo = FeedbackRepository(mock.AsyncMock())
 
     def test_convert_filter_to_dict(self):
         self.assertEqual(self.repo._convert_filter_to_dict(None), {})
@@ -109,7 +90,7 @@ class TestFeedbackRepository(unittest.TestCase):
 
     def test_normalize(self):
         cols = self.repo._columns_for_employee_feedback()
-        raw_row = [1, 'Eve', 'eve@example.com', 'eve@corp.com', 'IT', 'NY', '1', 'F', 'GenZ',
+        raw_row = [1, 'Eve', 'eve@example.com', 'eve@corp.com', '11999999999', 'IT', 'NY', '1', 'F', 'GenZ',
                    'L0', 'L1', 'L2', 'L3', 'L4', '01/01/2024',
                    4, 'ok', 3, 'ok', 5, 'ok', 2, 'meh', 3, 'meh', 4, 'meh', 5, 'meh', 10, 'meh']
         rows = [tuple(raw_row)]
@@ -119,6 +100,7 @@ class TestFeedbackRepository(unittest.TestCase):
         self.assertEqual(data['id'], 1)
         self.assertEqual(data['name'], 'Eve')
         self.assertEqual(data['email'], 'eve@example.com')
+        self.assertEqual(data['phone_number'], '11999999999')
         self.assertIsInstance(data['response_date'], datetime.date)
 
     def test_check_model(self):
@@ -130,27 +112,27 @@ class TestFeedbackRepository(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.repo._check_model(['invalid'])
 
-    def test_create(self):
+    async def test_create(self):
         self.repo.db.execute.return_value = [(42,)]
         feedback = {'name': 'Foo'}
-        ctx = self.repo.create(feedback)
-        self.repo.db.execute.assert_called_once()
+        ctx = await self.repo.create(feedback)
+        self.repo.db.execute.assert_awaited_once()
         self.assertEqual(ctx['data']['id'], 42)
         self.assertEqual(ctx['data']['name'], 'Foo')
 
-    def test_get_by_id(self):
+    async def test_get_by_id(self):
         fake_row = (1, 'Bob', 'bob@example.com', None, None, None, None, None, None,
                     None, None, None, None, None, None,
                     None, None, None, None, None, None, None, None, None, None,
                     None, None, None, None, None, None)
         self.repo.db.query.return_value = [fake_row]
         with mock.patch.object(self.repo, '_normalize', return_value=[{'id': 1, 'name': 'Bob'}]):
-            ctx = self.repo.get(page=1, limit=10, filters={'id': 1})
-            self.repo.db.query.assert_called_once()
+            ctx = await self.repo.get(page=1, limit=10, filters={'id': 1})
+            self.repo.db.query.assert_awaited_once()
             self.assertEqual(ctx['data']['id'], 1)
             self.assertEqual(ctx['meta']['total'], 1)
 
-    def test_get_with_filters_and_pagination(self):
+    async def test_get_with_filters_and_pagination(self):
         def side_effect_query(sql, params):
             if 'COUNT' in sql:
                 return [(7,)]
@@ -158,24 +140,24 @@ class TestFeedbackRepository(unittest.TestCase):
                 return [('row',)]
         self.repo.db.query.side_effect = side_effect_query
         with mock.patch.object(self.repo, '_normalize', return_value=[{'id': 1}, {'id': 2}]):
-            ctx = self.repo.get(page=2, limit=3, filters={})
-            self.assertEqual(self.repo.db.query.call_count, 2)
+            ctx = await self.repo.get(page=2, limit=3, filters={})
+            self.assertEqual(self.repo.db.query.await_count, 2)
             self.assertEqual(ctx['data'], [{'id': 1}, {'id': 2}])
             self.assertEqual(ctx['meta']['page'], 2)
             self.assertEqual(ctx['meta']['limit'], 3)
             self.assertEqual(ctx['meta']['total'], 7)
             self.assertEqual(ctx['meta']['pages'], 3)
 
-    def test_update(self):
+    async def test_update(self):
         self.repo.db.execute.return_value = None
         data = {'name': 'Updated'}
-        ctx = self.repo.update(5, data)
-        self.repo.db.execute.assert_called_once()
+        ctx = await self.repo.update(5, data)
+        self.repo.db.execute.assert_awaited_once()
         self.assertEqual(ctx['data']['id'], 5)
         self.assertEqual(ctx['data']['name'], 'Updated')
 
-    def test_delete(self):
+    async def test_delete(self):
         self.repo.db.execute.return_value = None
-        ctx = self.repo.delete(7)
-        self.repo.db.execute.assert_called_once_with('DELETE FROM employee_feedback WHERE id = %s;', (7,))
+        ctx = await self.repo.delete(7)
+        self.repo.db.execute.assert_awaited_once_with('DELETE FROM employee_feedback WHERE id = %s;', (7,))
         self.assertEqual(ctx['data']['id'], 7)
