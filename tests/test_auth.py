@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from tests.feedback_fixtures import FEEDBACK_ID, payload, record
 
+from app.repositories.idempotency_repository import StoredResponse
+
 import main
 from app.config import Config
 from app.security.auth import AuthService, get_auth_service, password_hasher
@@ -33,11 +35,12 @@ class TestAuth(unittest.TestCase):
         self.feedback.get.return_value = {'data': []}
         for method in ['create', 'update', 'patch']:
             getattr(self.feedback, method).return_value = {'data': record()}
+        self.feedback.create.return_value = StoredResponse(200, {'data': record().model_dump(mode='json'), 'meta': {}})
         self.feedback.delete.return_value = {'data': {'id': FEEDBACK_ID}}
         main.app.dependency_overrides[get_auth_service] = lambda: self.auth
         main.app.dependency_overrides[main.get_feedback_service] = lambda: self.feedback
         self.addCleanup(main.app.dependency_overrides.clear)
-        self.client = TestClient(main.app)
+        self.client = TestClient(main.app, headers={'Idempotency-Key': 'test-auth-key'})
         self.addCleanup(self.client.close)
 
     def headers(self, token=None):
@@ -135,3 +138,25 @@ class TestAuth(unittest.TestCase):
             self.config.jwt_secret = secret
             with self.assertRaises(ValueError):
                 self.config.validate_auth()
+
+    def test_replay_still_requires_current_admin_permissions(self):
+        self.user['role'] = 'admin'
+        headers = self.headers()
+        response = self.client.post('/api/v1/feedback', json=payload(), headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.feedback.create.reset_mock()
+        self.user['role'] = 'viewer'
+        self.assertEqual(self.client.post('/api/v1/feedback', json=payload(), headers=headers).status_code, 403)
+        self.user['is_active'] = False
+        self.assertEqual(self.client.post('/api/v1/feedback', json=payload(), headers=headers).status_code, 401)
+        self.feedback.create.assert_not_awaited()
+
+    def test_batch_requires_authentication_and_active_admin(self):
+        body = {'items': [payload()]}
+        self.assertEqual(self.client.post('/api/v1/feedback/batch', json=body).status_code, 401)
+        headers = self.headers()
+        self.assertEqual(self.client.post('/api/v1/feedback/batch', json=body, headers=headers).status_code, 403)
+        self.user['role'] = 'admin'
+        self.user['is_active'] = False
+        self.assertEqual(self.client.post('/api/v1/feedback/batch', json=body, headers=headers).status_code, 401)
+        self.feedback.create_batch.assert_not_awaited()

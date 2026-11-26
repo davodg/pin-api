@@ -4,13 +4,15 @@ import secrets
 from contextlib import asynccontextmanager
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, Query, Request, Response, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.config import Config
 from app.models.employee_feedback import (
+    FeedbackBatchCreate,
+    FeedbackBatchResponse,
     FeedbackCreate,
     FeedbackDeleted,
     FeedbackEnvelope,
@@ -21,6 +23,7 @@ from app.models.employee_feedback import (
 from app.models.feedback_filters import FeedbackFilters
 from app.repositories.feedback_repository import FeedbackNotFound, FeedbackRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.idempotency_repository import IdempotencyConflict, IdempotencyBusy
 from app.security.auth import (
     AuthService,
     get_auth_service,
@@ -76,9 +79,31 @@ async def root():
 )
 async def create_feedback(
     feedback: FeedbackCreate,
+    idempotency_key: str = Header(..., min_length=1, max_length=128,
+                                  pattern=r'^[A-Za-z0-9._:-]+$', alias='Idempotency-Key'),
+    user=Depends(get_current_user),
     feedback_service: FeedbackService = Depends(get_feedback_service),
 ):
-    return await feedback_service.create(feedback)
+    saved = await feedback_service.create(feedback, user['id'], idempotency_key)
+    return JSONResponse(status_code=saved.status, content=saved.body,
+                        headers={'Cache-Control': 'no-store'})
+
+@router.post(
+    "/feedback/batch",
+    response_model=FeedbackBatchResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def create_feedback_batch(
+    batch: FeedbackBatchCreate,
+    idempotency_key: str = Header(..., min_length=1, max_length=128,
+                                  pattern=r'^[A-Za-z0-9._:-]+$', alias='Idempotency-Key'),
+    user=Depends(get_current_user),
+    feedback_service: FeedbackService = Depends(get_feedback_service),
+):
+    saved = await feedback_service.create_batch(batch, user['id'], idempotency_key)
+    return JSONResponse(status_code=saved.status, content=saved.body,
+                        headers={'Cache-Control': 'no-store'})
+
 
 @router.get(
     "/feedback",
@@ -129,6 +154,17 @@ async def patch_feedback(
 @app.exception_handler(FeedbackNotFound)
 async def feedback_not_found(request: Request, exc: FeedbackNotFound):
     return JSONResponse(status_code=404, content={'detail': 'Feedback not found'})
+
+
+@app.exception_handler(IdempotencyConflict)
+async def idempotency_conflict(request: Request, exc: IdempotencyConflict):
+    return JSONResponse(status_code=409, content={'detail': 'Idempotency-Key already used with a different payload'})
+
+
+@app.exception_handler(IdempotencyBusy)
+async def idempotency_busy(request: Request, exc: IdempotencyBusy):
+    return JSONResponse(status_code=503, content={'detail': 'Operation busy; retry with the same Idempotency-Key'},
+                        headers={'Retry-After': '1'})
 
 
 app.include_router(router)

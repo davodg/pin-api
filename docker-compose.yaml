@@ -22,19 +22,21 @@ services:
 
   postgres:
     image: postgres:18.7
-    container_name: postgresql-pin
     restart: unless-stopped
+
     environment:
-      - POSTGRES_DB=pin
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - TZ=GMT
-    ports:
-      - 5432:5432
+      POSTGRES_DB: pin
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+
     volumes:
-      - ./docker-compose/postgres:/var/lib/postgresql-pin/data
+      - postgres_data:/var/lib/postgresql
+
     networks:
       - app_network
+
+volumes:
+  postgres_data:
 
 networks:
   app_network:

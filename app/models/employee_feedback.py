@@ -115,3 +115,23 @@ DataT = TypeVar('DataT')
 class FeedbackEnvelope(BaseModel, Generic[DataT]):
     data: DataT
     meta: dict[str, int] = Field(default_factory=dict)
+
+
+class FeedbackBatchCreate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    items: list[FeedbackCreate] = Field(min_length=1, max_length=100)
+
+
+class FeedbackBatchItem(BaseModel):
+    index: int = Field(ge=0)
+    id: UUID
+
+
+class FeedbackBatchMeta(BaseModel):
+    created: int = Field(ge=1, le=100)
+
+
+class FeedbackBatchResponse(BaseModel):
+    data: list[FeedbackBatchItem]
+    meta: FeedbackBatchMeta
